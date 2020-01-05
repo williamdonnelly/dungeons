@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link href="https://fonts.googleapis.com/css?family=IM+Fell+English|Nanum+Pen+Script" rel="stylesheet">
+<style>
+.title {
+    text-align: center;
+    font-family: 'IM Fell English', serif;
+    font-size: 48px;
+}
+.body {
+    font-family: 'Nanum Pen Script', cursive;
+    font-size: 16px;
+
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/2.6.4/svg.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+<script src="https://d3js.org/d3-voronoi.v1.min.js"></script>
+<script>
+function main() {
+/*
+Random dungeon drawing, in the style of Dyson Logos.
+For examples, see https://rpgcharacters.wordpress.com/maps/tutorials-help/
+Here Dragons Abound, https://heredragonsabound.blogspot.com/
+
+TO DO:
+=====
+Editor
+x Toggle between different orientations for doors and stairs
+X Show currently highlighted tool
+- Space out the icons
+
+Parameters
+- Make as many parameters as possible editable
+
+Low level drawing functions
+- Add a (global?) parameter for transformation so we can easily rotate/translate scale
+- Make a noise class which will store frequency, amplitude, offset.
+- Fill in the rocks
+- More cracks in floor tiles - from the sides
+X Use real noise e.g. https://github.com/josephg/noisejs/blob/master/perlin.js
+- Variable-width lines: https://heredragonsabound.blogspot.ca/2017/10/a-different-way-to-draw-line.html
+- Animated line drawing
+
+Hatching
+X Temporal coherence
+  X Split hatching into init and render, make render as light as possible
+
+Dungeon features
+x Doors,
+  x archways
+  x portcullis
+  - double doors
+x Secret doors
+x Stairs
+- Curtains
+x Statues
+- altars
+x columns
+x pit traps
+- Tables, chairs, beds, barrels, boxes
+
+Random dungeon generation
+BSP dungeons: http://www.roguebasin.com/index.php?title=Basic_BSP_Dungeon_generation
+*/
+
+
+// TODO: make as many parameters as possible customizable
+//
+var w = 32,
+    h = 26
+var sq = 24
+
+// Simplex noise, used globally with offsets
+var simplex = new SimplexNoise();
+
+// Hatching parameters
+var hatching_outer_rad = 1.75;
+var hatching_inner_rad = 0.75;
+var hatching_rock_min = 0.1;
+var hatching_rock_max = 0.5;
+
+
+// Width and height in pixels
+var width = w * sq,
+    height = h * sq
+
+// create SVG document and set its size
+var draw = SVG('dungeon').size(width, height);
+draw.viewbox(0, 0, width, height);
+
+// Different possible square types
+var squares = Object.freeze(
+  {"empty":0, "floor":1, "door":2, "arch":4, "portcullis":6, "stairs":8,
+  "secretdoor":12, "statue":13, "column":14, "pittrap":15, "trapdoor":16,
+  "altar":17})
+
+function is_door(m) { return m >= squares.door && m <= squares.portcullis + 1; }
+function is_stairs(m) { return m >= squares.stairs && m <= squares.stairs + 3; }
+
+var map = new Array(w);
+var i, j
+for(i = 0; i < w; i++) {
+  map[i] = new Array(h);
+  for(j = 0; j < h; j++) {
+    map[i][j] = 0;
+  }
+}
+
+function getmap(i, j) {
+  if(i < 0 || i >= w || j < 0 || j >= h) return squares.empty;
+  return map[i][j];
+}
+
+var brush = squares.floor;
+
+draw.click(function(evt) {
+  var b = draw.rbox();
+  var x = evt.clientX-b.x;
+  var y = evt.clientY-b.y;
+
+  if(x > width - button_w) {
+    var i = Math.floor(y/button_h)-1;
+    brush = buttons[i][0];
+
+  } else {
+
+    var sx = Math.floor(x/sq);
+    var sy = Math.floor(y/sq);
+
+    var m = getmap(sx,sy);
+    var b = brush;
+    if(is_stairs(b) && is_stairs(m)) {
+      if(m == squares.stairs+3) { b = squares.floor; }
+      else { b = m +1; }
+    } else if(is_door(b) && is_door(m)) {
+      if(m%2) { b = squares.floor; }
+      else { b++; }
+    } else {
+      if(m == brush) {
+        if(b == squares.floor) b = squares.empty;
+        else b = squares.floor;
+      }
+    }
+    map[sx][sy] = b;
+  }
+
+  render();
+})
+
+/* Keep a log, mostly for debugging */
+function log(s) {
+  document.getElementById('log').innerHTML += "<br>" + s;
+}
+
+// Coords: an array of coordinates [x,y,x,y...] in units of squares
+// Set loop = true to make them loop around to the start
+// w is the line width.
+function draw_line(coords, loop, linewidth, fill = false) {
+
+  if(coords.length <= 1) return;
+  var i;
+  var s = "M";
+//  var l = coords.length
+  for (i = 0; i < coords.length; i++) {
+    s += " " + coords[i][0] * sq + " " + coords[i][1] * sq;
+    if (i == 0) s += " L";
+  }
+
+  if (loop) s += " Z";
+//  if(loop)  s += " " + coords[0][0] * sq + " " + coords[0][1] * sq;
+
+
+  var path = draw.path(s)
+//  if(fill) alert('fill')
+  path.fill(fill?'#FFFFFF':'none').stroke({
+    width: linewidth,
+    color: '#000000',
+    linecap: 'round'
+  })
+
+
+}
+
+/*================
+  Vector functions
+  ================*/
+function random_unit_vector(xy) {
+  var v = [simplex.noise2D(xy[0], xy[1]), simplex.noise2D(xy[0]+3, xy[1]+4)];
+  return normalize(v);
+}
+function dot(v,w) {
+  return v[0]*w[0]+v[1]*w[1];
+}
+function mul(s,v) {
+  return [s*v[0],s*v[1]];
+}
+function add(p1,p2) {
+  return [p1[0]+p2[0],p1[1]+p2[1]];
+}
+function sub(p1, p2) {
+  return [p1[0]-p2[0],p1[1]-p2[1]];
+}
+function distance(p1,p2) {
+  return length(sub(p1,p2));
+}
+function length(v) {
+  return Math.sqrt(v[0]*v[0] + v[1]*v[1]);
+}
+function normalize(v) {
+  var l = length(v)
+  return [v[0]/l, v[1]/l];
+}
+
+
+/*=================
+  Drawing functions
+  =================*/
+
+// Generate a noisy segment between p0 and p1
+// If last = 1, include the final point p1 - useful for segments
+// Otherwise don't include it. Useful when segment is part of a bigger path.
+function noisy_segment(p0, p1, last) {
+  var dx = p1[0] - p0[0],
+    dy = p1[1] - p0[1]
+  var l = Math.sqrt(dx * dx + dy * dy)
+  var dl = 0.25
+
+  var n = 0.02
+  var s = Math.floor((l + dl) / dl)
+
+  if(s > 100) {
+    log("noisy_segment: too many segments (" + s + ")");
+    return [];
+  }
+  var nl = []
+
+  var i
+  for (i = 0; i < s + last; i++) {
+    var x = p0[0] + (i / s) * dx;
+    var y = p0[1] + (i / s) * dy;
+    nl.push([x + n*simplex.noise2D(x,y), y+n*simplex.noise2D(x+5,y+6)]);
+  }
+
+  return nl;
+}
+
+
+// Take a line and make it noisy
+function noisy_line(l, loop) {
+  var nl = [];
+  for(j = 0; j < l.length-1; j++) {
+    var last = 0;
+    if(!loop && j == l.length - 2) last = 1;
+    nl = nl.concat(noisy_segment(l[j], l[j+1], last))
+  }
+  if(loop) nl = nl.concat(noisy_segment(l[l.length-1], l[0], 0))
+  return nl;
+}
+
+// Draw a broken line
+function broken_line(x0, y0, x1, y1) {
+
+  var floor_line_width = 1;
+  var floor_noise_scale = 2;
+  var floor_noise_threshold = 0.5;
+  var floor_noise_offset = [32.3,76.3];
+  var floor_noise = 0.03;
+
+  var dx = x1 - x0, dy = y1-y0;
+  var l = Math.sqrt(dx*dx + dy*dy);
+  var n = normalize([dx,dy]);
+  var dl = 0.1;
+
+  var line = [];
+  for(var s = 0; s < l; s += dl) {
+    var xy = add([x0,y0], mul(s,n));
+    xy[0] += floor_noise * simplex.noise2D(floor_noise_scale*xy[0], floor_noise_scale*xy[1]);
+    xy[1] += floor_noise * simplex.noise2D(floor_noise_scale*xy[0]+floor_noise_offset[0], floor_noise_scale*xy[1]+floor_noise_offset[1]);
+    line.push(xy);
+
+    if(simplex.noise2D(xy[0],xy[1]) < floor_noise_threshold) {
+      line.push(xy)
+    } else {
+      draw_line(line, 0, floor_line_width);
+      line = [];
+    }
+  }
+  draw_line(line, 0, floor_line_width);
+}
+
+
+function room(x0, y0, x1, y1) {
+
+  for(i = x0; i < x1; i++) {
+    for(j = y0; j < y1; j++) {
+      map[i][j] = squares.floor;
+    }
+  }
+}
+
+// Return distance to center of nearest indoor square, useful for hatching
+function map_distance(p) {
+  var x0 = Math.floor(p[0]), y0 = Math.floor(p[1]);
+  if(getmap(x0,y0) != squares.empty) {
+    return 0;
+  }
+  var d = 2;
+  var i,j;
+  for(i = x0 - 2; i <= x0 + 2; i++) {
+    for(j = y0 - 2; j <= y0 + 2; j++) {
+      if(!outside(i,j)) {
+        d = Math.min(d, distance(p, [i+0.5,j+0.5]));
+      }
+    }
+  }
+
+  return d;
+}
+
+/// TODO: Split off arguments
+function noisy_circle(x, y, r, a0 = 0, a1 = 1, last = false) {
+
+  var l = 2*Math.PI*r* Math.abs(a1 - a0);
+  var dl = 0.05;
+
+  var n = 0.05;
+  var noise_scale = 1;
+  var s = Math.floor((l + dl) / dl);
+//  if(last) s += 1;
+
+  var nl = [];
+  var i;
+  for (i = 0; i < s; i++) {
+    var t = a0 + (i/s)*2*Math.PI*(a1-a0);
+    var xp = x + r*Math.cos(t);
+    var yp = y - r*Math.sin(t);
+    nl.push([xp + n*simplex.noise2D(noise_scale*xp,noise_scale*yp), yp + n*simplex.noise2D(noise_scale*xp+5,noise_scale*yp+6)]);
+  }
+
+  return nl;
+}
+
+/// Draw a statue
+function draw_statue(x, y, r) {
+  var l = noisy_circle(x+0.5,y+0.5,r)
+  draw_line(l, true, 2)
+  var poly = []
+  for(i = 0; i < 10; i++) {
+    var t = 2*Math.PI*i/10
+    pr = (i%2)? 0.3*r : r
+    poly.push([sq*(x+0.5 + pr*Math.sin(t)), sq*(y+0.5 - pr*Math.cos(t))])
+  }
+  draw.polygon(poly).fill('#000000').stroke({ width: 1 })
+}
+
+function draw_column(x,y,r) {
+  var l = noisy_circle(x+0.5,y+0.5,r);
+  draw_line(l, true, 3);
+}
+
+// Stairs
+function draw_stairs(x,y,m) {
+  var o = m - squares.stairs;
+  var v = [o==1?1:o==3?-1:0,o==0?1:o==2?-1:0];
+  var xy = [x+0.5,y+0.5];
+  var w = [v[1],-v[0]];
+  //alert(v);
+  for(var i = 0; i < 5; i++) {
+    //    var seg = noisy_segment([x+0.2*i+0.1,y+0.6+0.075*i],[x+0.2*i+0.1,y+0.4-0.075*i],1)
+    var xy0 = add(add(xy, mul(0.2*i-0.4,v)),mul(0.1 + 0.075*i, w));
+    var xy1 = add(add(xy, mul(0.2*i-0.4,v)),mul(-0.1 - 0.075*i, w));
+    var seg = noisy_segment(xy0,xy1,1)
+    draw_line(seg, false, 2);
+  }
+}
+
+function draw_pittrap(x,y) {
+  var x0 = x + 0.1; var y0 = y + 0.1;
+  var x1 = x + 0.9; var y1 = y + 0.9;
+  draw_line(noisy_segment([x0,y0],[x1,y1],1),false,2);
+  draw_line(noisy_segment([x1,y0],[x0,y1],1),false,2);
+  draw_line(noisy_line([[x0,y0],[x1,y0],[x1,y1],[x0,y1]],true),true,2)
+}
+
+function draw_trapdoor(x,y) {
+  var r = 0.35;
+  var l = noisy_circle(x+0.5,y+0.5,r);
+  draw_line(l, true, 2);
+  draw.text('f').move(sq*(x+0.4),sq*(y+0.2)).font({size:16, family: 'Nanum Pen Script'});
+}
+
+function draw_altar(x,y) {
+  var x0 = x + 0.1; var x1 = x + 0.9;
+  var y0 = y + 0.3; var y1 = y + 0.7;
+  draw_line(noisy_line([[x0,y0],[x1,y0],[x1,y1],[x0,y1]],true),true,2)
+  draw_line(noisy_circle(x + 0.7, y + 0.5, 0.05), true,2);
+  draw_line(noisy_circle(x + 0.3, y + 0.5, 0.05), true,2);
+}
+
+/* Global parameters for hatching */
+var sites = [];
+var voronoi, diagram, links, polygons;
+
+function init_hatching(x0,y0,x1,y1) {
+  var i,j;
+  for(i = 0; i < 2*(x1-x0); i++) {
+    for(j = 0; j < 2*(y1-y0); j++) {
+      var v = [x0 + 0.5*(i + Math.random()),
+               y0 + 0.5*(j + Math.random())];
+      sites.push(v);
+    }
+  }
+
+  voronoi = d3.voronoi();
+  voronoi.extent([[x0,y0], [x1,y1]]);
+  diagram = voronoi(sites);
+  links = diagram.links();
+  polygons = diagram.polygons();
+}
+
+function draw_hatching(x0,y0,x1,y1) {
+
+  for(i = 0; i < polygons.length; i++) {
+
+    // Determine how close we are to the edge, which tells us whether to draw
+    var dist = map_distance(sites[i]);
+    weight = (hatching_outer_rad - dist) / (hatching_outer_rad - hatching_inner_rad);
+
+
+    var noise1 = 0.5 + 0.5*simplex.noise2D(sites[i][0], sites[i][1]);
+    var noise2 = 0.5 + 0.5*simplex.noise2D(sites[i][0]+1, sites[i][1]+1);
+
+    if(noise1 > weight) {
+
+      // Generate a second random number - if it is less than the weight add some rocks and debris.
+      // This concentrates the debris around the border.
+      if(noise2 < weight) {
+
+        // Draw a rock in the middle
+        var r = (0.5 + 0.5*simplex.noise2D(sites[i][0]+2, sites[i][1]+2))*0.1 + 0.05;
+        var c = noisy_circle(sites[i][0], sites[i][1], r);
+        draw_line(c, true, 1.5, true);
+      }
+      continue;
+    }
+
+
+    var p = polygons[i];
+
+    // Random direction and tangent
+    var d = random_unit_vector(sites[i]);
+    var t = [-d[1],d[0]];
+
+    // Determine extents of the polygon
+    var j, u0, u1, v0, v1;
+    for(j = 0; j < p.length; j++) {
+      var u = dot(d,p[j]), v = dot(t,p[j]);
+      if(j == 0) {
+        u0 = u1 = u;
+        v0 = v1 = v;
+      } else {
+        u0 = Math.min(u0, u);
+        u1 = Math.max(u1, u);
+        v0 = Math.min(v0, v);
+        v1 = Math.max(v1, v);
+      }
+    }
+
+    // Find the number of lines - choose spacing so that n is between 2 and 5
+    var spacing = 0.2;
+    var n = Math.floor((v1 - v0) / spacing + 1);
+
+    for(j = 0; j < n; j++) {
+      var umin = u1;
+      var umax = u0;
+
+      var v = v0 + j*spacing;
+      var l = [add(mul(u0,d),mul(v,t)),add(mul(u1,d),mul(v,t))];
+      var l0 = mul(v,t);
+
+      // Clip line against polygon manually
+      var k
+      for(k = 0; k < p.length; k++) {
+        // Find intersections of the line segment v*t + u*d with the line segment l[0]..l[1]
+        // We want v*t + u*d = p0 + z*(p1 - p0) where z is between 0 and 1.
+        // Define q0 = p0 - v*t, e = p0 - p1, so we have
+        //  d*u + e*z = q0
+        // That's a 2x2 matrix equation:
+        //  d[0]*u + e[0]*z = q0[0]
+        //  d[1]*u + e[1]*z = q0[1]
+        // The inverse matrix is is 1 / det times
+        //   e[1]  -e[0]
+        //   -d[1]  d[0]
+        var p0 = p[k], e = sub(p0, p[(k+1)%p.length]), q0 = sub(p0, mul(v,t));
+        var det = d[0]*e[1] - d[1]*e[0]
+        var u = (e[1]*q0[0] - e[0]*q0[1]) / det
+        var z = (-d[1]*q0[0] + d[0]*q0[1]) / det
+
+        if(-0.01 <= z && z <= 1.01) {
+
+          umax = Math.max(umax, u);
+          umin = Math.min(umin, u);
+        }
+
+      }
+
+      // Reject lines that are too short
+      if(umax < umin + 0.05) continue;
+
+      // Clipped line
+      var cl = [add(mul(umin,d),mul(v,t)),add(mul(umax,d),mul(v,t))];
+
+  //    var line = draw.line(l); //.scale(sq,sq);
+  //    line.stroke({ width:1, color: '#FF0000'});
+  //    draw.line(cl).stroke({ width:1.5, color: '#000000'});
+  //    log(cl);
+      ncl = noisy_segment(cl[0], cl[1], 1);
+      draw_line(ncl, false, 1.5);
+    }
+  }
+}
+
+function outside(i,j) {
+  var m = getmap(i,j);
+  return m == squares.empty || m == squares.secretdoor;
+}
+
+var button_w = 160;
+var button_h = 24;
+var buttons = [[squares.floor, "Floor"],[squares.door, "Door"],[squares.arch, "Arch"],
+  [squares.portcullis, "Portcullis"], [squares.secretdoor, "Secret door"],
+  [squares.statue, "Statue"],[squares.column, "Column"],
+  [squares.stairs, "Stairs"],[squares.pittrap, "Pit trap"],[squares.trapdoor, "Trap door"],
+  [squares.altar, "Altar"]];
+
+function draw_ui() {
+  // Draw an outline
+  {
+    var x0 = (width-button_w)/sq;
+    var x1 = width/sq;
+    var y0 = button_h/(2*sq);
+    var y1 =((buttons.length+1.5)*button_h)/sq;
+    draw_line(noisy_line([[x0,y0],[x0,y1],[x1,y1],[x1,y0]], 1), true, 2, true);
+  }
+  for(var i = 0; i < buttons.length; i++) {
+    var x = width-button_w+60;
+    var y = (i+1)*button_h;
+    var b = buttons[i][0];
+    var weight = brush==b?'bold':'';
+    draw.text(buttons[i][1]).move(x,y).font({size:20, family: 'Nanum Pen Script', weight: weight});
+    var ix = 26; // icon x coordinate
+    if(b == squares.floor) {
+      // Floor
+      var o = 0;
+//      var i = 25; var ii = i + 1;
+      broken_line(ix+o,1+o,ix+1-o,1+o);
+      broken_line(ix+1-o,1+o,ix+1-o,2-o);
+      broken_line(ix+1-o,2-o,ix+o,2-o);
+      broken_line(ix+o,2-o,ix+o,1+o);
+    } else if(b == squares.door) {
+      draw_door(ix,i+1,true,squares.door+1);
+    } else if(b == squares.arch) {
+      draw_door(ix,i+1,true,squares.arch+1);
+    } else if(b == squares.portcullis) {
+      draw_door(ix,i+1,true,squares.portcullis+1);
+    } else if(b == squares.secretdoor) {
+      draw.text("S").move((ix+0.275)*sq,(i+1-0.275)*sq).font({size:28, family: 'Nanum Pen Script'});//, weight: 'bold'});
+    } else if(b == squares.statue) {
+      draw_statue(ix,i+1,0.3);
+    } else if(b == squares.column) {
+      draw_column(ix,i+1,0.15);
+    } else if(b == squares.stairs) {
+      draw_stairs(ix,i+1,b);
+    } else if(b == squares.pittrap) {
+      draw_pittrap(ix,i+1);
+    } else if(b == squares.trapdoor) {
+      draw_trapdoor(ix,i+1);
+    } else if(b == squares.altar) {
+       draw_altar(ix,i+1);
+    }
+  }
+
+}
+
+function draw_water() {
+  var water_line_width = 2;
+  var water_line2_width = 1;
+  var water_noise_scale = 0.5;
+  var water_noise2_scale = 1.5;
+  var water_noise2 = 0.1;
+  var water_noise2_threshold = 0.2;
+
+  // Wavy line for water
+  var line = [];
+  var line2 = [];
+  for(var i = 0; i < 10*w; i++) {
+    var x = i / 10.0;
+    var y = 20;
+    var yp = y+water_noise_scale*simplex.noise2D(0.3*x,y);
+    line.push([x,yp]);
+
+    if(simplex.noise2D(0.8*x,y) < water_noise2_threshold) {
+      line2.push([x,yp+0.3+water_noise2*simplex.noise2D(water_noise2_scale*x,water_noise2_scale*y)])
+    } else {
+      draw_line(line2, 0, water_line2_width);
+      line2 = [];
+    }
+//    var x = 20 +
+//    draw_line(noisy_segment([i,x], [i+1,x], true), false, 1);
+  }
+  draw_line(line,0,water_line_width);
+}
+
+// TODO: Simplify this method by making a transform function that will allow
+//  for 90 degree rotation.
+function draw_door(i, j, ns, m) {
+
+  var aa = 0.35; var cc = 0.2; var ee = 0.35;
+  var a = aa*sq; var b = sq-a;
+  var c = cc*sq; var d = sq-c;
+
+  if(m%2) {
+    draw.polygon([0,0,0,a,c,a,c,b,0,b,0,sq,sq,sq,sq,b,d,b,d,a,sq,a,sq,0]).move(i*sq,j*sq).fill('#FFFFFF');
+
+    var wall = noisy_line([[i,j],[i,j+aa],[i+cc,j+aa],[i+cc,j+1-aa],[i,j+1-aa],[i,j+1]],0);
+    draw_line(wall, false, 5);
+    wall = noisy_line([[i+1,j],[i+1,j+aa],[i+1-cc,j+aa],[i+1-cc,j+1-aa],[i+1,j+1-aa],[i+1,j+1]],0);
+    draw_line(wall, false, 5);
+
+    if(m == squares.door || m == squares.door + 1) {
+      l = noisy_line([[i+cc,j+ee],[i+cc,j+1-ee],[i+1-cc,j+1-ee],[i+1-cc,j+ee]],true)
+      draw_line(l,true,2)
+    }
+
+    if(m == squares.portcullis || m == squares.portcullis + 1) {
+      draw_line(noisy_circle(i + 0.35, j + 0.5, 0.025),true,1);
+      draw_line(noisy_circle(i + 0.5, j + 0.5, 0.025),true,1);
+      draw_line(noisy_circle(i + 0.65, j + 0.5, 0.025),true,1);
+    }
+  } else {
+    draw.polygon([0,0,a,0,a,c,b,c,b,0,sq,0,sq,sq,b,sq,b,d,a,d,a,sq,0,sq]).move(i*sq,j*sq).fill('#FFFFFF');
+    var wall = noisy_line([[i,j],[i+aa,j],[i+aa,j+cc],[i+1-aa,j+cc],[i+1-aa,j],[i+1,j]],0);
+    draw_line(wall, false, 5);
+    wall = noisy_line([[i,j+1],[i+aa,j+1],[i+aa,j+1-cc],[i+1-aa,j+1-cc],[i+1-aa,j+1],[i+1,j+1]],0);
+    draw_line(wall, false, 5);
+
+    if(m == squares.door || m == squares.door + 1) {
+      l = noisy_line([[i + ee,j+cc],[i+1-ee,j+cc],[i+1-ee,j+1-cc],[i+ee,j+1-cc]],true)
+      draw_line(l,true,2)
+    }
+    if(m == squares.portcullis || m == squares.portcullis + 1) {
+      draw_line(noisy_circle(i + 0.5, j + 0.35, 0.025),true,1);
+      draw_line(noisy_circle(i + 0.5, j + 0.5, 0.025),true,1);
+      draw_line(noisy_circle(i + 0.5, j + 0.65, 0.025),true,1);
+    }
+
+  }
+
+}
+
+
+function render()
+{
+  draw.clear();
+
+  draw_hatching(0,0,w,h);
+
+  // Fill in rooms with white
+  {
+    var i,j;
+    for(i = 0; i < w; i++) {
+      for(j = 0; j < h; j++) {
+        var m = getmap(i,j);
+        if(m == squares.secretdoor) {
+          draw.circle(sq*0.8).move((i + 0.1)*sq,(j + 0.1)*sq).fill('#FFFFFF');
+          draw.text("S").move((i+0.275)*sq,(j-0.275)*sq).font({size:28, family: 'Nanum Pen Script'});//, weight:'bold'});
+
+        } else if(is_door(m)) {
+          // Figure out orientation.
+          // If two opposite sides are empty, or three sides, then make the door between opposite empty sides
+          // If one is empty? If none are empty? If all are empty?
+//          if(outside(i-1,j) && outside(i+1,j) && (!outside(i,j-1) || !outside(i,j+1))) {
+            draw_door(i,j,true,m);
+//          } else if(outside(i,j-1) && outside(i,j+1) && (!outside(i-1,j) || !outside(i+1,j))) {
+//            draw_door(i,j,false,m);
+//          }
+        } else if(m != squares.empty) {
+          draw.rect(sq,sq).move(i*sq,j*sq).fill('#FFFFFF');
+        }
+
+        if(m == squares.statue) {
+          draw_statue(i,j,0.3);
+        } else if(m == squares.column) {
+          draw_column(i,j,0.15)
+        } else if(is_stairs(m)) {
+          draw_stairs(i,j,m);
+        } else if(m == squares.pittrap) {
+          draw_pittrap(i,j);
+        } else if(m == squares.trapdoor) {
+          draw_trapdoor(i,j);
+        } else if(m == squares.altar) {
+          draw_altar(i,j);
+        }
+      }
+    }
+  }
+
+
+  {
+    // Draw room outlines.
+    var i,j;
+    for(i = 0; i < w; i++) {
+      for(j = 0; j < h; j++) {
+      	if(outside(i,j)) {
+      	  for(di = -1; di <= 1; di++) {
+      	    for(dj = -1; dj <= 1; dj++) {
+      	      if(Math.abs(di) + Math.abs(dj) != 1) continue;
+      	      var osq = getmap(i+di,j+dj);
+      	      if(is_door(osq)) { // Doors are handled separately
+      	      } else if(!outside(i + di, j + dj)) {
+                // Draw the wall between (i,j) and (i+di,j+dj)
+      	        var wall = noisy_segment([i + 0.5 + 0.5*di + 0.5*dj, j + 0.5 + 0.5*dj + 0.5*di],
+      	                   [i + 0.5 + 0.5*di - 0.5*dj, j + 0.5 + 0.5*dj - 0.5*di], true);
+      	        draw_line(wall, false, 5);
+      	      }
+      	    }
+      	  }
+      	}
+      }
+    }
+
+    // Draw vertical lines for floor tiles
+    for(i = 1; i < w; i++) {
+      var drawing = false;
+      var j0 = 0;
+      for(j = 0; j <= h; j++) {
+        if(!outside(i-1,j) && !outside(i,j) && j < h) {
+	        if(!drawing) j0 = j;
+	        drawing = true;
+	      } else {
+	        if(drawing) {
+	          broken_line(i,j0,i,j);
+	          drawing = false;
+	        }
+	      }
+      }
+    }
+
+    // Draw horizontal lines for floor tiles
+    for(j = 1; j < h; j++) {
+      var drawing = false;
+      var i0 = 0;
+      for(i = 0; i <= w; i++) {
+	      if(!outside(i,j-1) && !outside(i,j) && i < w) {
+	        if(!drawing) i0 = i;
+	          drawing = true;
+	        } else {
+	          if(drawing) {
+	            broken_line(i0,j,i,j);
+	            drawing = false;
+	          }
+          }
+        }
+    }
+
+  }
+
+  // Draw some cracks in the corners of floor tiles.
+  // For each corner generate two random coordinates.
+  // If they are not too small, draw a diagonal line clipping the corner of the tile.
+  for(i = 0; i < w; i++) {
+    for(j = 0; j < h; j++) {
+      if(outside(i,j)) continue;
+      var dx = 0.35* simplex.noise2D(i,j);
+      var dy = 0.35* simplex.noise2D(i+8,j+9);
+
+      if(Math.abs(dx) > 0.1 && Math.abs(dy) > 0.1) {
+	      draw_line(noisy_segment([i+dx,j], [i,j+dy], true), false, 1);
+      }
+    }
+  }
+
+  draw_ui();
+    //draw_water();
+}
+
+  init_hatching(0,0,w,h);
+
+  // Make a simple sample dungeon
+  room(2,2,7,9);
+  map[2][3] = squares.column;
+  map[2][5] = squares.column;
+  map[2][7] = squares.column;
+//  map[2][9] = squares.column;
+  map[6][3] = squares.column;
+  map[6][5] = squares.column;
+  map[6][7] = squares.column;
+//  map[6][9] = squares.column;
+  map[4][2] = squares.altar;
+
+  room(4,9,5,11);
+  room(4,10,8,11);
+  map[4][9] = squares.stairs;
+  map[5][10] = squares.stairs+1;
+  map[8][10] = squares.secretdoor;
+
+  room(8,2,18,3);
+  room(16,3,18,10);
+  room(7,4,15,5);
+  map[7][4] = squares.portcullis;
+  room(9,8,15,11);
+  map[9][9] = squares.statue;
+  map[7][2] = squares.secretdoor;
+  map[15][4] = squares.door;
+  map[12][3] = squares.door+1;
+  map[12][5] = squares.stairs;
+  map[12][6] = squares.floor;
+  map[12][7] = squares.stairs;
+
+  map[12][9] = squares.pittrap;
+  map[14][9] = squares.trapdoor;
+  map[16][9] = squares.trapdoor;
+
+  render();
+
+}
+</script>
+
+  </head>
+<body onload="main()">
+
+<div class="title">Here Dungeons Abound!</div>
+
+<center><div id="dungeon"></div></center>
+<div id="log" class="body"></div>
+  </body>
+</html>
