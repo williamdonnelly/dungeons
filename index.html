@@ -21,23 +21,32 @@
 function main() {
 /*
 Random dungeon drawing, in the style of Dyson Logos.
-For examples, see https://rpgcharacters.wordpress.com/maps/tutorials-help/
-Here Dragons Abound, https://heredragonsabound.blogspot.com/
+Drawing examples:     https://rpgcharacters.wordpress.com/maps/tutorials-help/
+Here Dragons Abound:  https://heredragonsabound.blogspot.com/
+Similar project:      https://monk-e-boy.github.io/dungeon-mapper/
+
 
 TO DO:
 =====
 Editor
 x Toggle between different orientations for doors and stairs
 X Show currently highlighted tool
-- Space out the icons
+- Space out the icons a little bit
+x Save button
+  - Save png
+  - Save data to url token
+- Don't include the UI panel in saved svg file
+  - Make the UI a separate element?
+- Allow for "painting" with click-and-drag
 
 Parameters
 - Make as many parameters as possible editable
 
 Low level drawing functions
+- Replace
 - Add a (global?) parameter for transformation so we can easily rotate/translate scale
 - Make a noise class which will store frequency, amplitude, offset.
-- Fill in the rocks
+x Fill in the rocks
 - More cracks in floor tiles - from the sides
 X Use real noise e.g. https://github.com/josephg/noisejs/blob/master/perlin.js
 - Variable-width lines: https://heredragonsabound.blogspot.ca/2017/10/a-different-way-to-draw-line.html
@@ -56,10 +65,11 @@ x Secret doors
 x Stairs
 - Curtains
 x Statues
-- altars
+x altars
 x columns
 x pit traps
 - Tables, chairs, beds, barrels, boxes
+- Open pits
 
 Random dungeon generation
 BSP dungeons: http://www.roguebasin.com/index.php?title=Basic_BSP_Dungeon_generation
@@ -81,14 +91,29 @@ var hatching_inner_rad = 0.75;
 var hatching_rock_min = 0.1;
 var hatching_rock_max = 0.5;
 
-
 // Width and height in pixels
 var width = w * sq,
     height = h * sq
+var draw;
+
+{
+  // Make a save button
+  var savebutton = SVG('savebutton').size(100,50);
+  savebutton.viewbox(0,0,100,50);
+  savebutton.click(function(evt) {
+    save_svg();
+  })
+  draw = savebutton;
+  var x0 = 0, x1 = 4, y0 = 0, y1 = 1;
+  draw_line(noisy_line([[x0,y0],[x0,y1],[x1,y1],[x1,y0]], 1), true, 2, true);
+  savebutton.text('Export SVG').move(10,2).font({size:20, family: 'Nanum Pen Script'});
+}
 
 // create SVG document and set its size
-var draw = SVG('dungeon').size(width, height);
+draw = SVG('dungeon').size(width, height);
 draw.viewbox(0, 0, width, height);
+draw.rect(width, height).attr({ fill: '#ffffff' })
+
 
 // Different possible square types
 var squares = Object.freeze(
@@ -115,7 +140,7 @@ function getmap(i, j) {
 
 var brush = squares.floor;
 
-draw.click(function(evt) {
+draw.mousedown(function(evt) {
   var b = draw.rbox();
   var x = evt.clientX-b.x;
   var y = evt.clientY-b.y;
@@ -169,11 +194,9 @@ function draw_line(coords, loop, linewidth, fill = false) {
   }
 
   if (loop) s += " Z";
-//  if(loop)  s += " " + coords[0][0] * sq + " " + coords[0][1] * sq;
-
 
   var path = draw.path(s)
-//  if(fill) alert('fill')
+
   path.fill(fill?'#FFFFFF':'none').stroke({
     width: linewidth,
     color: '#000000',
@@ -227,7 +250,8 @@ function noisy_segment(p0, p1, last) {
   var l = Math.sqrt(dx * dx + dy * dy)
   var dl = 0.25
 
-  var n = 0.02
+  var ns = 1;
+  var n = 0.03;
   var s = Math.floor((l + dl) / dl)
 
   if(s > 100) {
@@ -240,7 +264,7 @@ function noisy_segment(p0, p1, last) {
   for (i = 0; i < s + last; i++) {
     var x = p0[0] + (i / s) * dx;
     var y = p0[1] + (i / s) * dy;
-    nl.push([x + n*simplex.noise2D(x,y), y+n*simplex.noise2D(x+5,y+6)]);
+    nl.push([x + n*simplex.noise2D(ns*x,ns*y), y+n*simplex.noise2D(ns*x+5,ns*y+6)]);
   }
 
   return nl;
@@ -664,6 +688,7 @@ function draw_door(i, j, ns, m) {
 function render()
 {
   draw.clear();
+  draw.rect(width,height).fill('#ffffff');
 
   draw_hatching(0,0,w,h);
 
@@ -786,6 +811,22 @@ function render()
     //draw_water();
 }
 
+function save_svg() {
+
+  var blob = new Blob([draw.svg()], { type: "image/svg+xml" });
+  var a = document.createElement("a"),
+            url = URL.createObjectURL(blob);
+            a.href = url;
+            a.download = "dungeon.svg";
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function() {
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            }, 0);
+}
+
+
   init_hatching(0,0,w,h);
 
   // Make a simple sample dungeon
@@ -793,19 +834,15 @@ function render()
   map[2][3] = squares.column;
   map[2][5] = squares.column;
   map[2][7] = squares.column;
-//  map[2][9] = squares.column;
   map[6][3] = squares.column;
   map[6][5] = squares.column;
   map[6][7] = squares.column;
-//  map[6][9] = squares.column;
   map[4][2] = squares.altar;
-
   room(4,9,5,11);
   room(4,10,8,11);
   map[4][9] = squares.stairs;
   map[5][10] = squares.stairs+1;
   map[8][10] = squares.secretdoor;
-
   room(8,2,18,3);
   room(16,3,18,10);
   room(7,4,15,5);
@@ -818,7 +855,6 @@ function render()
   map[12][5] = squares.stairs;
   map[12][6] = squares.floor;
   map[12][7] = squares.stairs;
-
   map[12][9] = squares.pittrap;
   map[14][9] = squares.trapdoor;
   map[16][9] = squares.trapdoor;
@@ -830,10 +866,10 @@ function render()
 
   </head>
 <body onload="main()">
-
-<div class="title">Here Dungeons Abound!</div>
-
-<center><div id="dungeon"></div></center>
-<div id="log" class="body"></div>
-  </body>
+  <div class="title">Here Dungeons Abound!</div>
+  <center><div id="dungeon"></div>
+  <div id="savebutton" class="body"></div>
+  <div id="log" class="body"></div>
+  </center>
+</body>
 </html>
