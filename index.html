@@ -11,8 +11,15 @@
 .body {
     font-family: 'Nanum Pen Script', cursive;
     font-size: 16px;
-
 }
+.ui {
+  position: absolute;
+  right: 0;
+  margin-right: 10px;
+  top: 25%;
+  margin-top: 0;
+}
+
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/2.6.4/svg.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
@@ -23,7 +30,7 @@ function main() {
 Random dungeon drawing, in the style of Dyson Logos.
 Drawing examples:     https://rpgcharacters.wordpress.com/maps/tutorials-help/
 Here Dragons Abound:  https://heredragonsabound.blogspot.com/
-Similar project:      https://monk-e-boy.github.io/dungeon-mapper/
+Dungeon mapper:       https://monk-e-boy.github.io/dungeon-mapper/
 
 
 TO DO:
@@ -35,15 +42,15 @@ X Show currently highlighted tool
 x Save button
   - Save png
   - Save data to url token
-- Don't include the UI panel in saved svg file
-  - Make the UI a separate element?
-- Allow for "painting" with click-and-drag
+x Don't include the UI panel in saved svg file
+  x Make the UI a separate element
+x Allow for "painting" with click-and-drag
 
 Parameters
 - Make as many parameters as possible editable
 
 Low level drawing functions
-- Replace
+x Replace text with lines
 - Add a (global?) parameter for transformation so we can easily rotate/translate scale
 - Make a noise class which will store frequency, amplitude, offset.
 x Fill in the rocks
@@ -68,6 +75,8 @@ x Statues
 x altars
 x columns
 x pit traps
+x trap doors
+  - Toggle between 'f', 'c' and 's'
 - Tables, chairs, beds, barrels, boxes
 - Open pits
 
@@ -75,9 +84,6 @@ Random dungeon generation
 BSP dungeons: http://www.roguebasin.com/index.php?title=Basic_BSP_Dungeon_generation
 */
 
-
-// TODO: make as many parameters as possible customizable
-//
 var w = 32,
     h = 26
 var sq = 24
@@ -106,13 +112,14 @@ var draw;
   draw = savebutton;
   var x0 = 0, x1 = 4, y0 = 0, y1 = 1;
   draw_line(noisy_line([[x0,y0],[x0,y1],[x1,y1],[x1,y0]], 1), true, 2, true);
-  savebutton.text('Export SVG').move(10,2).font({size:20, family: 'Nanum Pen Script'});
+  savebutton.text('Export SVG').move(10,2).font({size:20, family: 'Nanum Pen Script'}).style('cursor', 'pointer');
 }
 
 // create SVG document and set its size
-draw = SVG('dungeon').size(width, height);
+var dungeon = SVG('dungeon').size(width, height);
+draw = dungeon;
 draw.viewbox(0, 0, width, height);
-draw.rect(width, height).attr({ fill: '#ffffff' })
+draw.rect(width, height).attr({ fill: '#ffffff' });
 
 
 // Different possible square types
@@ -139,39 +146,51 @@ function getmap(i, j) {
 }
 
 var brush = squares.floor;
+var brush_active = -1;
 
 draw.mousedown(function(evt) {
   var b = draw.rbox();
   var x = evt.clientX-b.x;
   var y = evt.clientY-b.y;
 
-  if(x > width - button_w) {
-    var i = Math.floor(y/button_h)-1;
-    brush = buttons[i][0];
+  var sx = Math.floor(x/sq);
+  var sy = Math.floor(y/sq);
 
+  var m = getmap(sx,sy);
+  brush_active = brush;
+  if(is_stairs(brush_active) && is_stairs(m)) {
+    if(m == squares.stairs+3) { brush_active = squares.floor; }
+    else { brush_active = m +1; }
+  } else if(is_door(brush_active) && is_door(m)) {
+    if(m%2) { brush_active = squares.floor; }
+    else { brush_active++; }
   } else {
-
-    var sx = Math.floor(x/sq);
-    var sy = Math.floor(y/sq);
-
-    var m = getmap(sx,sy);
-    var b = brush;
-    if(is_stairs(b) && is_stairs(m)) {
-      if(m == squares.stairs+3) { b = squares.floor; }
-      else { b = m +1; }
-    } else if(is_door(b) && is_door(m)) {
-      if(m%2) { b = squares.floor; }
-      else { b++; }
-    } else {
-      if(m == brush) {
-        if(b == squares.floor) b = squares.empty;
-        else b = squares.floor;
-      }
+    if(m == brush) {
+      if(brush_active == squares.floor) brush_active = squares.empty;
+      else brush_active = squares.floor;
     }
-    map[sx][sy] = b;
   }
+  map[sx][sy] = brush_active;
 
   render();
+})
+draw.mouseup(function(evt) {
+  brush_active = -1;
+})
+
+draw.mousemove(function(evt) {
+  if(brush_active < 0) return;
+  var b = draw.rbox();
+  var x = evt.clientX-b.x;
+  var y = evt.clientY-b.y;
+  var sx = Math.floor(x/sq);
+  var sy = Math.floor(y/sq);
+  var m = getmap(sx,sy);
+
+  if(m != brush_active) {
+    map[sx][sy] = brush_active;
+    render();
+  }
 })
 
 /* Keep a log, mostly for debugging */
@@ -343,7 +362,8 @@ function map_distance(p) {
   return d;
 }
 
-/// TODO: Split off arguments
+// Construct a circle at (x,y) of radius r.
+// If a0 and a1 are specified, start at angle 2 pi a0 and end at angle 2 pi a1.
 function noisy_circle(x, y, r, a0 = 0, a1 = 1, last = false) {
 
   var l = 2*Math.PI*r* Math.abs(a1 - a0);
@@ -356,8 +376,8 @@ function noisy_circle(x, y, r, a0 = 0, a1 = 1, last = false) {
 
   var nl = [];
   var i;
-  for (i = 0; i < s; i++) {
-    var t = a0 + (i/s)*2*Math.PI*(a1-a0);
+  for (i = 0; i <= s; i++) {
+    var t = 2*Math.PI * (a0 + (i/s)*(a1-a0));
     var xp = x + r*Math.cos(t);
     var yp = y - r*Math.sin(t);
     nl.push([xp + n*simplex.noise2D(noise_scale*xp,noise_scale*yp), yp + n*simplex.noise2D(noise_scale*xp+5,noise_scale*yp+6)]);
@@ -390,9 +410,7 @@ function draw_stairs(x,y,m) {
   var v = [o==1?1:o==3?-1:0,o==0?1:o==2?-1:0];
   var xy = [x+0.5,y+0.5];
   var w = [v[1],-v[0]];
-  //alert(v);
   for(var i = 0; i < 5; i++) {
-    //    var seg = noisy_segment([x+0.2*i+0.1,y+0.6+0.075*i],[x+0.2*i+0.1,y+0.4-0.075*i],1)
     var xy0 = add(add(xy, mul(0.2*i-0.4,v)),mul(0.1 + 0.075*i, w));
     var xy1 = add(add(xy, mul(0.2*i-0.4,v)),mul(-0.1 - 0.075*i, w));
     var seg = noisy_segment(xy0,xy1,1)
@@ -412,7 +430,10 @@ function draw_trapdoor(x,y) {
   var r = 0.35;
   var l = noisy_circle(x+0.5,y+0.5,r);
   draw_line(l, true, 2);
-  draw.text('f').move(sq*(x+0.4),sq*(y+0.2)).font({size:16, family: 'Nanum Pen Script'});
+  var l = noisy_segment([x+0.45,y+0.4],[x+0.5,y+0.7],true);
+  l = l.concat(noisy_circle(x + 0.55, y + 0.4, 0.1,0.5,0))
+  draw_line(l,false,1.5);
+  draw_line(noisy_segment([x+0.4,y+0.5],[x+0.55,y+0.5],true),0,1.5);
 }
 
 function draw_altar(x,y) {
@@ -536,10 +557,6 @@ function draw_hatching(x0,y0,x1,y1) {
       // Clipped line
       var cl = [add(mul(umin,d),mul(v,t)),add(mul(umax,d),mul(v,t))];
 
-  //    var line = draw.line(l); //.scale(sq,sq);
-  //    line.stroke({ width:1, color: '#FF0000'});
-  //    draw.line(cl).stroke({ width:1.5, color: '#000000'});
-  //    log(cl);
       ncl = noisy_segment(cl[0], cl[1], 1);
       draw_line(ncl, false, 1.5);
     }
@@ -559,52 +576,74 @@ var buttons = [[squares.floor, "Floor"],[squares.door, "Door"],[squares.arch, "A
   [squares.stairs, "Stairs"],[squares.pittrap, "Pit trap"],[squares.trapdoor, "Trap door"],
   [squares.altar, "Altar"]];
 
+
+var ui;
+{
+  // Make a UI
+  var ui_width = 160;
+  var ui_height = button_h * (buttons.length+1);
+  ui = SVG('ui').size(ui_width,ui_height);
+  ui.viewbox(0,0,ui_width,ui_height);
+  ui.click(function(evt) {
+    var b = ui.rbox();
+    var x = evt.clientX-b.x;
+    var y = evt.clientY-b.y;
+    var i = Math.floor(y/button_h-0.5);
+    if(i < 0 || i >= buttons.length) return;
+    brush = buttons[i][0];
+    draw_ui();
+  })
+  draw_ui();
+}
+
+
 function draw_ui() {
+  draw = ui;
   // Draw an outline
   {
-    var x0 = (width-button_w)/sq;
-    var x1 = width/sq;
-    var y0 = button_h/(2*sq);
-    var y1 =((buttons.length+1.5)*button_h)/sq;
+    var x0 = -0;
+    var x1 = button_w/sq;
+    var y0 = 0;
+    var y1 =((buttons.length+1)*button_h)/sq;
     draw_line(noisy_line([[x0,y0],[x0,y1],[x1,y1],[x1,y0]], 1), true, 2, true);
   }
   for(var i = 0; i < buttons.length; i++) {
-    var x = width-button_w+60;
-    var y = (i+1)*button_h;
+    var x = 60;
+    var y = (i+0.5)*button_h;
     var b = buttons[i][0];
     var weight = brush==b?'bold':'';
-    draw.text(buttons[i][1]).move(x,y).font({size:20, family: 'Nanum Pen Script', weight: weight});
-    var ix = 26; // icon x coordinate
+    draw.text(buttons[i][1]).move(x,y).font({size:20, family: 'Nanum Pen Script', weight: weight}).style('cursor', 'pointer');
+
+    var ix = 0.5, iy = 0.5;
     if(b == squares.floor) {
-      // Floor
       var o = 0;
-//      var i = 25; var ii = i + 1;
-      broken_line(ix+o,1+o,ix+1-o,1+o);
-      broken_line(ix+1-o,1+o,ix+1-o,2-o);
-      broken_line(ix+1-o,2-o,ix+o,2-o);
-      broken_line(ix+o,2-o,ix+o,1+o);
+      broken_line(ix+o,iy+o,ix+1-o,iy+o);
+      broken_line(ix+1-o,iy+o,ix+1-o,iy+1-o);
+      broken_line(ix+1-o,iy+1-o,ix+o,iy+1-o);
+      broken_line(ix+o,iy+1-o,ix+o,iy+o);
     } else if(b == squares.door) {
-      draw_door(ix,i+1,true,squares.door+1);
+      draw_door(ix,i+iy,true,squares.door+1);
     } else if(b == squares.arch) {
-      draw_door(ix,i+1,true,squares.arch+1);
+      draw_door(ix,i+iy,true,squares.arch+1);
     } else if(b == squares.portcullis) {
-      draw_door(ix,i+1,true,squares.portcullis+1);
+      draw_door(ix,i+iy,true,squares.portcullis+1);
     } else if(b == squares.secretdoor) {
-      draw.text("S").move((ix+0.275)*sq,(i+1-0.275)*sq).font({size:28, family: 'Nanum Pen Script'});//, weight: 'bold'});
+      draw_secret_door(ix,i+iy);
     } else if(b == squares.statue) {
-      draw_statue(ix,i+1,0.3);
+      draw_statue(ix,i+iy,0.3);
     } else if(b == squares.column) {
-      draw_column(ix,i+1,0.15);
+      draw_column(ix,i+iy,0.15);
     } else if(b == squares.stairs) {
-      draw_stairs(ix,i+1,b);
+      draw_stairs(ix,i+iy,b);
     } else if(b == squares.pittrap) {
-      draw_pittrap(ix,i+1);
+      draw_pittrap(ix,i+iy);
     } else if(b == squares.trapdoor) {
-      draw_trapdoor(ix,i+1);
+      draw_trapdoor(ix,i+iy);
     } else if(b == squares.altar) {
-       draw_altar(ix,i+1);
+       draw_altar(ix,i+iy);
     }
   }
+  draw = dungeon;
 
 }
 
@@ -637,8 +676,7 @@ function draw_water() {
   draw_line(line,0,water_line_width);
 }
 
-// TODO: Simplify this method by making a transform function that will allow
-//  for 90 degree rotation.
+// Draw a door. 
 function draw_door(i, j, ns, m) {
 
   var aa = 0.35; var cc = 0.2; var ee = 0.35;
@@ -684,6 +722,11 @@ function draw_door(i, j, ns, m) {
 
 }
 
+function draw_secret_door(i,j) {
+  draw.circle(sq*0.8).move((i + 0.1)*sq,(j + 0.1)*sq).fill('#FFFFFF');
+  draw_line(noisy_circle(i + 0.5, j + 0.35, 0.15, 0, 0.75).concat(noisy_circle(i + 0.5, j + 0.65, 0.15, 1.25, 0.5)),false,2);
+}
+
 
 function render()
 {
@@ -699,22 +742,12 @@ function render()
       for(j = 0; j < h; j++) {
         var m = getmap(i,j);
         if(m == squares.secretdoor) {
-          draw.circle(sq*0.8).move((i + 0.1)*sq,(j + 0.1)*sq).fill('#FFFFFF');
-          draw.text("S").move((i+0.275)*sq,(j-0.275)*sq).font({size:28, family: 'Nanum Pen Script'});//, weight:'bold'});
-
+          draw_secret_door(i,j);
         } else if(is_door(m)) {
-          // Figure out orientation.
-          // If two opposite sides are empty, or three sides, then make the door between opposite empty sides
-          // If one is empty? If none are empty? If all are empty?
-//          if(outside(i-1,j) && outside(i+1,j) && (!outside(i,j-1) || !outside(i,j+1))) {
             draw_door(i,j,true,m);
-//          } else if(outside(i,j-1) && outside(i,j+1) && (!outside(i-1,j) || !outside(i+1,j))) {
-//            draw_door(i,j,false,m);
-//          }
         } else if(m != squares.empty) {
           draw.rect(sq,sq).move(i*sq,j*sq).fill('#FFFFFF');
         }
-
         if(m == squares.statue) {
           draw_statue(i,j,0.3);
         } else if(m == squares.column) {
@@ -807,8 +840,7 @@ function render()
     }
   }
 
-  draw_ui();
-    //draw_water();
+  //draw_water();
 }
 
 function save_svg() {
@@ -863,13 +895,15 @@ function save_svg() {
 
 }
 </script>
-
+  <title>Here dungeons abound</title>
   </head>
 <body onload="main()">
   <div class="title">Here Dungeons Abound!</div>
-  <center><div id="dungeon"></div>
-  <div id="savebutton" class="body"></div>
-  <div id="log" class="body"></div>
+  <center>
+      <div id="dungeon"></div>
+      <div id="ui" class="ui"></div>
+      <div id="savebutton" class="body"></div>
+      <div id="log" class="body"></div>
   </center>
 </body>
 </html>
